@@ -1,0 +1,12 @@
+# Python'a ait geçici dosyaları ve klasörleri görmezden gel
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Sanal ortam klasörünü görmezden gel (eğer kullanıyorsan)
+venv/
+env/
+
+# EN ÖNEMLİSİ: .env dosyasını ASLA yükleme!
+.env
