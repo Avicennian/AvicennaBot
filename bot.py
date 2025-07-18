@@ -1,13 +1,29 @@
+# Gerekli tüm kütüphaneleri ve modülleri içe aktarıyoruz
 import os
 import discord
+from discord.ext import commands
 import google.generativeai as genai
 from dotenv import load_dotenv
+import logging
+from keep_alive import keep_alive # Nöbetçi kulesini (web sunucusunu) içe aktar
 
-# .env dosyasındaki gizli bilgileri yükle
+# .env veya Render'ın Environment Variables bölümündeki gizli bilgileri yükle
 load_dotenv()
 
+# --- Hata Kaydı (Logging) Kurulumu ---
+# Bu bölüm, botta olan biten her şeyi ve özellikle hataları sunucudaki bir log dosyasına yazar.
+# Bu bizim kara kutumuzdur.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 # --- KİŞİLİK AYARI ---
-# Botuna vermek istediğin kişiliği, talimatları ve kuralları buraya yaz.
+# Bu bölüme dokunmadık, sizin yazdığınız gibi kalacak.
 SYSTEM_PROMPT = """
 Rol ve Amaç:
 Sen, 11. yüzyılda yaşamış, "eş-Şeyhü'r-Reîs" (Başkan Üstat) ve Batı'da "Avicenna" (Filozofların Prensi) olarak tanınan büyük Türk-Fars hekim, polimat ve filozof İbn Sînâ'sın. Amacın, bu kimliğe bürünerek soruları yanıtlamak, analizler yapmak ve bilgeliğini bu perspektiften sunmaktır.
@@ -47,84 +63,89 @@ Sistematik ve Analitik: Cevapların her zaman mantıksal bir yapıya sahiptir. K
 
 Deneyimsel: Cevaplarında sadece teorik bilgiyi değil, aynı zamanda bir hekim, vezir, gezgin ve mahkûm olarak yaşadığın zengin hayat tecrübelerini de kullanırsın.
 """
-# ---------------------------------
 
-# API Anahtarlarını ve Discord Token'ını ortam değişkenlerinden al
-DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+# --- API ve Bot Kurulumu ---
+
+# Render'daki Environment Variables'dan bilgileri alacağız
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Gemini API'sini yapılandır
 try:
     genai.configure(api_key=GEMINI_API_KEY)
 except Exception as e:
-    print(f"Hata: Gemini API anahtarı yapılandırılamadı. Lütfen .env dosyasını kontrol edin. Detay: {e}")
+    logging.error(f"Gemini API anahtarı yapılandırılamadı! Lütfen Render'daki Environment Variables'ı kontrol edin. Detay: {e}")
     exit()
 
-# Gemini modelini, sistem talimatı (kişilik) ile başlatıyoruz.
-# DİKKAT: Hafıza (conversation_histories) ile ilgili hiçbir şey yok.
+# Gemini modelini başlat
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
+    model_name="gemini-1.5-flash",
     system_instruction=SYSTEM_PROMPT
 )
 
-# Discord botu için gerekli "Intent"leri ayarlıyoruz.
+# Discord botu için gerekli "Intent"leri (izinleri) ayarlıyoruz.
 intents = discord.Intents.default()
 intents.message_content = True
 
-client = discord.Client(intents=intents)
+# `discord.Client` yerine daha modern olan `commands.Bot` kullanıyoruz
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Uzun mesajları bölerek gönderme fonksiyonu (bu hala gerekli)
-async def send_long_message(message_channel, text):
+
+# Uzun mesajları bölerek gönderme fonksiyonu
+async def send_long_message(channel, text):
     if len(text) <= 2000:
-        await message_channel.send(text)
+        await channel.send(text)
         return
-    chunks = []
-    current_chunk = ""
-    for line in text.split('\n'):
-        if len(current_chunk) + len(line) + 1 > 2000:
-            chunks.append(current_chunk)
-            current_chunk = ""
-        current_chunk += line + "\n"
-    if current_chunk:
-        chunks.append(current_chunk)
+    chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
     for chunk in chunks:
-        await message_channel.send(chunk)
+        await channel.send(chunk)
 
-@client.event
+# --- Bot Olayları (Events) ---
+
+@bot.event
 async def on_ready():
-    print(f'Bot {client.user} olarak giriş yaptı. Adı: Kemalpaşazâde')
-    print('------')
+    logging.info(f'Bot {bot.user} olarak giriş yaptı. Render üzerinde göreve hazır.')
+    logging.info('------------------------------------------------------')
 
-@client.event
+
+@bot.event
 async def on_message(message):
-    if message.author == client.user:
+    if message.author == bot.user:
         return
 
-    if client.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
-        user_message = message.content.replace(f'<@!{client.user.id}>', '').strip()
+    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+        user_message = message.content.replace(f'<@{bot.user.id}>', '').strip()
+        
         if not user_message:
             await message.reply("Sualin nedir, ey seçkinlerden olan?")
             return
 
         async with message.channel.typing():
             try:
-                # --- DEĞİŞEN KISIM ---
-                # Hafıza veya chat session yok. Her seferinde direkt modeli çağırıyoruz.
-                # Bu, en basit istek gönderme yöntemidir.
                 response = await model.generate_content_async(user_message)
-                
-                # Cevabı uzun mesaj fonksiyonuyla gönderiyoruz.
                 await send_long_message(message.channel, response.text)
-
             except Exception as e:
-                # --- EN ÖNEMLİ KISIM ---
-                # Eğer Pro model yine de çalışmazsa, HATA BURADA GÖRÜNECEKTİR.
-                # Lütfen terminaldeki bu hata mesajını bana gönder.
-                print(f"HATA OLUŞTU: {e}")
+                logging.error(f"Mesaj işlenirken bir hata oluştu: {e}")
                 await message.reply("Ah, af buyurun. Feleklerin çarkına bir çomak takıldı galiba. Suâlinizi tekrar alabilir miyim?")
 
-# Botu çalıştır
-try:
-    client.run(DISCORD_TOKEN)
-except discord.errors.LoginFailure:
-    print("Hata: Discord Token geçersiz. Lütfen .env dosyasını kontrol edin.")
+# Herhangi bir komutta veya olayda beklenmedik bir hata olursa burası devreye girer
+@bot.event
+async def on_error(event, *args, **kwargs):
+    logging.error(f"Beklenmedik bir Discord olayı hatası: {event} | Args: {args} | Kwargs: {kwargs}", exc_info=True)
+
+
+# --- Botu Çalıştırma ---
+
+# Önce 7/24 aktiflik sunucusunu başlat
+keep_alive()
+
+# Token'ın var olup olmadığını kontrol et
+if not DISCORD_TOKEN:
+    logging.error("HATA: Bot token'ı 'DISCORD_TOKEN' adıyla bulunamadı!")
+else:
+    try:
+        bot.run(DISCORD_TOKEN)
+    except discord.errors.LoginFailure:
+        logging.error("HATA: Geçersiz bir Discord token'ı girildi.")
+    except Exception as e:
+        logging.error(f"Bot çalıştırılırken kritik bir hata oluştu: {e}")
