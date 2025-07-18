@@ -123,7 +123,7 @@ async def send_long_message(channel, text):
 # --- Bot Olayları (Events) ---
 @bot.event
 async def on_ready():
-    await tree.sync() # Slash komutlarını Discord ile senkronize et
+    await bot.tree.sync() # Slash komutlarını Discord ile senkronize et
     logging.info(f'Bot {bot.user} olarak giriş yaptı. Hafıza ve Ferman modülleri aktif.')
     logging.info('------------------------------------------------------')
 
@@ -161,7 +161,7 @@ async def on_message(message):
                 await message.reply("Ah, af buyurun. Zihnimde bir anlık bir karmaşa oldu. Suâlinizi tekrar alabilir miyim?")
 
 # --- Slash Komutu: /mitaana ---
-@tree.command(name="mitaana", description="İbn Sînâ'nın sizinle olan sohbet hafızasını sıfırlar.")
+@bot.tree.command(name="mitaana", description="İbn Sînâ'nın sizinle olan sohbet hafızasını sıfırlar.")
 async def mitaana(interaction: discord.Interaction):
     user_id = interaction.user.id
     history_file = get_history_path(user_id)
