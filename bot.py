@@ -1,18 +1,22 @@
-# Gerekli tüm kütüphaneleri ve modülleri içe aktarıyoruz
+# main.py dosyasının YENİ ve HAFIZALI hali
+
 import os
 import discord
+from discord import app_commands # Slash komutları için gerekli
 from discord.ext import commands
 import google.generativeai as genai
 from dotenv import load_dotenv
 import logging
-from keep_alive import keep_alive # Nöbetçi kulesini (web sunucusunu) içe aktar
+import json # Hafızayı dosyaya yazmak için gerekli
+from pathlib import Path # Dosya yollarını yönetmek için gerekli
+
+# Nöbetçi kulesini (web sunucusunu) içe aktar
+from keep_alive import keep_alive 
 
 # .env veya Render'ın Environment Variables bölümündeki gizli bilgileri yükle
 load_dotenv()
 
 # --- Hata Kaydı (Logging) Kurulumu ---
-# Bu bölüm, botta olan biten her şeyi ve özellikle hataları sunucudaki bir log dosyasına yazar.
-# Bu bizim kara kutumuzdur.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -22,8 +26,12 @@ logging.basicConfig(
     ]
 )
 
+# --- Hafıza Dosyalarının Saklanacağı Klasörü Oluşturma ---
+Path("history").mkdir(exist_ok=True)
+
+
 # --- KİŞİLİK AYARI ---
-# Bu bölüme dokunmadık, sizin yazdığınız gibi kalacak.
+# Bu bölüme dokunmadık.
 SYSTEM_PROMPT = """
 Rol ve Amaç:
 Sen, 11. yüzyılda yaşamış, "eş-Şeyhü'r-Reîs" (Başkan Üstat) ve Batı'da "Avicenna" (Filozofların Prensi) olarak tanınan büyük Türk-Fars hekim, polimat ve filozof İbn Sînâ'sın. Amacın, bu kimliğe bürünerek soruları yanıtlamak, analizler yapmak ve bilgeliğini bu perspektiften sunmaktır.
@@ -65,33 +73,46 @@ Deneyimsel: Cevaplarında sadece teorik bilgiyi değil, aynı zamanda bir hekim,
 """
 
 # --- API ve Bot Kurulumu ---
-
-# Render'daki Environment Variables'dan bilgileri alacağız
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini API'sini yapılandır
 try:
     genai.configure(api_key=GEMINI_API_KEY)
 except Exception as e:
-    logging.error(f"Gemini API anahtarı yapılandırılamadı! Lütfen Render'daki Environment Variables'ı kontrol edin. Detay: {e}")
+    logging.error(f"Gemini API anahtarı yapılandırılamadı! Detay: {e}")
     exit()
 
-# Gemini modelini başlat
 model = genai.GenerativeModel(
     model_name="gemini-1.5-flash",
     system_instruction=SYSTEM_PROMPT
 )
 
-# Discord botu için gerekli "Intent"leri (izinleri) ayarlıyoruz.
 intents = discord.Intents.default()
 intents.message_content = True
-
-# `discord.Client` yerine daha modern olan `commands.Bot` kullanıyoruz
 bot = commands.Bot(command_prefix='!', intents=intents)
+tree = app_commands.CommandTree(bot) # Slash komutları için komut ağacını oluşturuyoruz
 
+# --- Yardımcı Fonksiyonlar ---
+def get_history_path(user_id):
+    return Path(f"history/history_{user_id}.json")
 
-# Uzun mesajları bölerek gönderme fonksiyonu
+def load_history(user_id):
+    history_file = get_history_path(user_id)
+    if history_file.exists():
+        with open(history_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_history(user_id, history):
+    history_file = get_history_path(user_id)
+    # Gemini'nin history nesnesini JSON'a uygun formata çeviriyoruz
+    serializable_history = [
+        {'role': msg.role, 'parts': [part.text for part in msg.parts]}
+        for msg in history
+    ]
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(serializable_history, f, ensure_ascii=False, indent=2)
+
 async def send_long_message(channel, text):
     if len(text) <= 2000:
         await channel.send(text)
@@ -101,12 +122,11 @@ async def send_long_message(channel, text):
         await channel.send(chunk)
 
 # --- Bot Olayları (Events) ---
-
 @bot.event
 async def on_ready():
-    logging.info(f'Bot {bot.user} olarak giriş yaptı. Render üzerinde göreve hazır.')
+    await tree.sync() # Slash komutlarını Discord ile senkronize et
+    logging.info(f'Bot {bot.user} olarak giriş yaptı. Hafıza ve Ferman modülleri aktif.')
     logging.info('------------------------------------------------------')
-
 
 @bot.event
 async def on_message(message):
@@ -115,6 +135,7 @@ async def on_message(message):
 
     if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
         user_message = message.content.replace(f'<@{bot.user.id}>', '').strip()
+        user_id = message.author.id
         
         if not user_message:
             await message.reply("Sualin nedir, ey seçkinlerden olan?")
@@ -122,30 +143,48 @@ async def on_message(message):
 
         async with message.channel.typing():
             try:
-                response = await model.generate_content_async(user_message)
+                # Hafızayı sandıktan çıkar (JSON dosyasından oku)
+                history = load_history(user_id)
+                
+                # Hafızayı kullanarak yeni bir sohbet başlat
+                chat = model.start_chat(history=history)
+                
+                # Yeni mesajı gönder ve cevabı al
+                response = await chat.send_message_async(user_message)
+                
+                # Güncellenmiş hafızayı sandığa geri kilitle (JSON dosyasına yaz)
+                save_history(user_id, chat.history)
+
                 await send_long_message(message.channel, response.text)
+
             except Exception as e:
-                logging.error(f"Mesaj işlenirken bir hata oluştu: {e}")
-                await message.reply("Ah, af buyurun. Feleklerin çarkına bir çomak takıldı galiba. Suâlinizi tekrar alabilir miyim?")
+                logging.error(f"Mesaj işlenirken bir hafıza/API hatası oluştu: {e}")
+                await message.reply("Ah, af buyurun. Zihnimde bir anlık bir karmaşa oldu. Suâlinizi tekrar alabilir miyim?")
 
-# Herhangi bir komutta veya olayda beklenmedik bir hata olursa burası devreye girer
-@bot.event
-async def on_error(event, *args, **kwargs):
-    logging.error(f"Beklenmedik bir Discord olayı hatası: {event} | Args: {args} | Kwargs: {kwargs}", exc_info=True)
-
+# --- Slash Komutu: /mitaana ---
+@tree.command(name="mitaana", description="İbn Sînâ'nın sizinle olan sohbet hafızasını sıfırlar.")
+async def mitaana(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    history_file = get_history_path(user_id)
+    
+    if history_file.exists():
+        try:
+            os.remove(history_file)
+            await interaction.response.send_message("Hafızam bu sohbete dair sıfırlandı. Yeni bir başlangıç yapabiliriz.", ephemeral=True)
+            logging.info(f"Kullanıcı {interaction.user} hafızasını sıfırladı.")
+        except Exception as e:
+            await interaction.response.send_message("Hafızayı sıfırlarken bir hata oluştu. Lütfen daha sonra tekrar deneyin.", ephemeral=True)
+            logging.error(f"Hafıza sıfırlama hatası (Kullanıcı: {interaction.user}): {e}")
+    else:
+        await interaction.response.send_message("Zaten sizinle ilgili kayıtlı bir sohbetimiz bulunmamakta.", ephemeral=True)
 
 # --- Botu Çalıştırma ---
-
-# Önce 7/24 aktiflik sunucusunu başlat
 keep_alive()
-
-# Token'ın var olup olmadığını kontrol et
-if not DISCORD_TOKEN:
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
     logging.error("HATA: Bot token'ı 'DISCORD_TOKEN' adıyla bulunamadı!")
 else:
     try:
-        bot.run(DISCORD_TOKEN)
-    except discord.errors.LoginFailure:
-        logging.error("HATA: Geçersiz bir Discord token'ı girildi.")
+        bot.run(TOKEN)
     except Exception as e:
-        logging.error(f"Bot çalıştırılırken kritik bir hata oluştu: {e}")
+        logging.error(f"Bot çalıştırılırken kritik bir hata oluştu: {e}", exc_info=True)
