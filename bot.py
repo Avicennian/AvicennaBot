@@ -90,7 +90,6 @@ model = genai.GenerativeModel(
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
-tree = app_commands.CommandTree(bot) # Slash komutları için komut ağacını oluşturuyoruz
 
 # --- Yardımcı Fonksiyonlar ---
 def get_history_path(user_id):
