@@ -83,7 +83,7 @@ except Exception as e:
     exit()
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-2.5-flash",
     system_instruction=SYSTEM_PROMPT
 )
 
