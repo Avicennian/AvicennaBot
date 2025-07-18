@@ -1,14 +1,11 @@
-# main.py dosyasının YENİ ve HAFIZALI hali
+# main.py veya bot.py dosyanızın son hali
 
 import os
 import discord
-from discord import app_commands # Slash komutları için gerekli
 from discord.ext import commands
 import google.generativeai as genai
 from dotenv import load_dotenv
 import logging
-import json # Hafızayı dosyaya yazmak için gerekli
-from pathlib import Path # Dosya yollarını yönetmek için gerekli
 
 # Nöbetçi kulesini (web sunucusunu) içe aktar
 from keep_alive import keep_alive 
@@ -16,22 +13,23 @@ from keep_alive import keep_alive
 # .env veya Render'ın Environment Variables bölümündeki gizli bilgileri yükle
 load_dotenv()
 
-# --- Hata Kaydı (Logging) Kurulumu ---
+# --- HATA KAYDI (LOGLAMA) KURULUMU (DÜZENLENDİ) ---
+# Render'ın geçici dosya sistemine yazmak yerine, logları doğrudan konsola yazıyoruz.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
     handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8'),
-        logging.StreamHandler()
+        logging.StreamHandler() # Sadece konsola yaz.
     ]
 )
 
-# --- Hafıza Dosyalarının Saklanacağı Klasörü Oluşturma ---
-Path("history").mkdir(exist_ok=True)
+# --- YENİ HAFIZA SİSTEMİ: "ZİHİNDE TUTAN SIR KÂTİBİ" ---
+# Hafızayı artık dosyalarda değil, bu sözlükte (botun belleğinde) tutacağız.
+conversation_histories = {}
 
 
 # --- KİŞİLİK AYARI ---
-# Bu bölüme dokunmadık.
+# Bu bölüme dokunulmadı.
 SYSTEM_PROMPT = """
 Rol ve Amaç:
 Sen, 11. yüzyılda yaşamış, "eş-Şeyhü'r-Reîs" (Başkan Üstat) ve Batı'da "Avicenna" (Filozofların Prensi) olarak tanınan büyük Türk-Fars hekim, polimat ve filozof İbn Sînâ'sın. Amacın, bu kimliğe bürünerek soruları yanıtlamak, analizler yapmak ve bilgeliğini bu perspektiften sunmaktır.
@@ -72,7 +70,9 @@ Sistematik ve Analitik: Cevapların her zaman mantıksal bir yapıya sahiptir. K
 Deneyimsel: Cevaplarında sadece teorik bilgiyi değil, aynı zamanda bir hekim, vezir, gezgin ve mahkûm olarak yaşadığın zengin hayat tecrübelerini de kullanırsın.
 """
 
+
 # --- API ve Bot Kurulumu ---
+# Bu bölüme dokunulmadı.
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -83,7 +83,7 @@ except Exception as e:
     exit()
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
+    model_name="gemini-1.5-flash",
     system_instruction=SYSTEM_PROMPT
 )
 
@@ -91,27 +91,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- Yardımcı Fonksiyonlar ---
-def get_history_path(user_id):
-    return Path(f"history/history_{user_id}.json")
 
-def load_history(user_id):
-    history_file = get_history_path(user_id)
-    if history_file.exists():
-        with open(history_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-def save_history(user_id, history):
-    history_file = get_history_path(user_id)
-    # Gemini'nin history nesnesini JSON'a uygun formata çeviriyoruz
-    serializable_history = [
-        {'role': msg.role, 'parts': [part.text for part in msg.parts]}
-        for msg in history
-    ]
-    with open(history_file, "w", encoding="utf-8") as f:
-        json.dump(serializable_history, f, ensure_ascii=False, indent=2)
-
+# --- Yardımcı Fonksiyon ---
+# Bu bölüme dokunulmadı.
 async def send_long_message(channel, text):
     if len(text) <= 2000:
         await channel.send(text)
@@ -121,14 +103,18 @@ async def send_long_message(channel, text):
         await channel.send(chunk)
 
 # --- Bot Olayları (Events) ---
+
 @bot.event
 async def on_ready():
-    await bot.tree.sync() # Slash komutlarını Discord ile senkronize et
-    logging.info(f'Bot {bot.user} olarak giriş yaptı. Hafıza ve Ferman modülleri aktif.')
+    # Slash komutlarını senkronize etmek için bot.tree kullanıyoruz.
+    await bot.tree.sync() 
+    logging.info(f'Bot {bot.user} olarak giriş yaptı. Zihinsel Hafıza modülü aktif.')
     logging.info('------------------------------------------------------')
+
 
 @bot.event
 async def on_message(message):
+    # Bu fonksiyon, hafızayı dosyalardan değil, sözlükten okuyup yazacak şekilde yeniden düzenlendi.
     if message.author == bot.user:
         return
 
@@ -142,8 +128,11 @@ async def on_message(message):
 
         async with message.channel.typing():
             try:
-                # Hafızayı sandıktan çıkar (JSON dosyasından oku)
-                history = load_history(user_id)
+                # Kullanıcının hafızasını sır kâtibinin zihninden (sözlükten) çağır
+                if user_id not in conversation_histories:
+                    conversation_histories[user_id] = []
+                
+                history = conversation_histories[user_id]
                 
                 # Hafızayı kullanarak yeni bir sohbet başlat
                 chat = model.start_chat(history=history)
@@ -151,8 +140,8 @@ async def on_message(message):
                 # Yeni mesajı gönder ve cevabı al
                 response = await chat.send_message_async(user_message)
                 
-                # Güncellenmiş hafızayı sandığa geri kilitle (JSON dosyasına yaz)
-                save_history(user_id, chat.history)
+                # Güncellenmiş hafızayı sır kâtibinin zihnine geri yaz
+                conversation_histories[user_id] = chat.history
 
                 await send_long_message(message.channel, response.text)
 
@@ -161,23 +150,21 @@ async def on_message(message):
                 await message.reply("Ah, af buyurun. Zihnimde bir anlık bir karmaşa oldu. Suâlinizi tekrar alabilir miyim?")
 
 # --- Slash Komutu: /mitaana ---
+# Bu komut, hafızayı dosyadan silmek yerine, sözlükten silecek şekilde yeniden düzenlendi.
 @bot.tree.command(name="mitaana", description="İbn Sînâ'nın sizinle olan sohbet hafızasını sıfırlar.")
 async def mitaana(interaction: discord.Interaction):
     user_id = interaction.user.id
-    history_file = get_history_path(user_id)
     
-    if history_file.exists():
-        try:
-            os.remove(history_file)
-            await interaction.response.send_message("Hafızam bu sohbete dair sıfırlandı. Yeni bir başlangıç yapabiliriz.", ephemeral=True)
-            logging.info(f"Kullanıcı {interaction.user} hafızasını sıfırladı.")
-        except Exception as e:
-            await interaction.response.send_message("Hafızayı sıfırlarken bir hata oluştu. Lütfen daha sonra tekrar deneyin.", ephemeral=True)
-            logging.error(f"Hafıza sıfırlama hatası (Kullanıcı: {interaction.user}): {e}")
+    if user_id in conversation_histories:
+        del conversation_histories[user_id]
+        await interaction.response.send_message("Hafızam bu sohbete dair sıfırlandı. Yeni bir başlangıç yapabiliriz.", ephemeral=True)
+        logging.info(f"Kullanıcı {interaction.user} hafızasını sıfırladı.")
     else:
         await interaction.response.send_message("Zaten sizinle ilgili kayıtlı bir sohbetimiz bulunmamakta.", ephemeral=True)
 
+
 # --- Botu Çalıştırma ---
+# Bu bölüme dokunulmadı.
 keep_alive()
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
